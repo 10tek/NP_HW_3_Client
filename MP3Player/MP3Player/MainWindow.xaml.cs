@@ -18,6 +18,7 @@ using System.Windows.Shapes;
 using Newtonsoft.Json;
 using Microsoft.Win32;
 using System.IO;
+using System.Threading;
 
 namespace MP3Player
 {
@@ -26,49 +27,71 @@ namespace MP3Player
     /// </summary>
     public partial class MainWindow : Window
     {
-        private const string IP_ADDRESS = "10.1.4.41";
-        private const int PORT = 3231;
+        private const string IP_ADDRESS = "127.0.0.1";
+        private const int PORT = 3222;
         private List<MusicFileDto> musicFiles;
         private MediaPlayer player = new MediaPlayer();
 
         public MainWindow()
         {
             InitializeComponent();
-            UpdateList();
-            playList.ItemsSource = musicFiles;
         }
 
         private async void LoadBtnClick(object sender, RoutedEventArgs e)
         {
-            var path = @$"{Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)}\Musics";
-            using (var client = new TcpClient())
+            var selectedMusic = playList.SelectedItem as MusicFileDto;
+
+            if (selectedMusic is null)
             {
-                client.Connect(new IPEndPoint(IPAddress.Parse(IP_ADDRESS), PORT));
-                using (var stream = client.GetStream())
+                MessageBox.Show("Выберите музыку");
+                return;
+            }
+
+            var fileName = @$"{selectedMusic.Author}-{selectedMusic.SongName}(mp3p).mp3";
+            var musicPosition = new TimeSpan(0);
+            if (!File.Exists(fileName))
+            {
+                using (var client = new TcpClient())
                 {
-                    var data = Encoding.UTF8.GetBytes(musicFiles[playList.SelectedIndex].Id.ToString());
-                    stream.Write(data, 0, data.Length);
-                    var resultStringBuilder = new StringBuilder();
-
-                    var buffer = new byte[1024];
-                    stream.Read(buffer, 0, buffer.Length);
-                    resultStringBuilder.Append(Encoding.UTF8.GetString(buffer));
-
-                    Directory.CreateDirectory(path);
-                    var selectedMusic = JsonConvert.DeserializeObject<MusicFile>(resultStringBuilder.ToString());
-                    
-                    path += $@"\{selectedMusic.Author}-{selectedMusic.SongName}.mp3";
-                    using (var sw = new StreamWriter(path, true, Encoding.Default))
+                    client.Connect(new IPEndPoint(IPAddress.Parse(IP_ADDRESS), PORT));
+                    using (var stream = client.GetStream())
                     {
-                        await sw.WriteLineAsync(resultStringBuilder.ToString());
+                        var json = JsonConvert.SerializeObject(selectedMusic);
+                        var musicInfo = Encoding.UTF8.GetBytes(json);
+                        await stream.WriteAsync(musicInfo, 0, musicInfo.Length);
+                        var resultStringBuilder = new StringBuilder();
+
+                        var buffer = new byte[1024];
+                        File.Create(fileName).Close();
+                        do
+                        {
+                            await stream.ReadAsync(buffer, 0, buffer.Length);
+                            using (FileStream fstream = new FileStream(fileName, FileMode.Append, FileAccess.Write, FileShare.Read))
+                            {
+                                await fstream.WriteAsync(buffer);
+                                if (!File.Exists(fileName + "=tmp.mp3"))
+                                {
+                                    File.Copy(fileName, fileName + "=tmp.mp3");
+                                }
+                            }
+                            if (File.Exists(fileName + "=tmp.mp3"))
+                            {
+                                player.Open(new Uri(fileName + "=tmp.mp3", UriKind.RelativeOrAbsolute));
+                                player.Play();
+                            }
+                            musicPosition = player.Position;
+                        }
+                        while (stream.DataAvailable);
                     }
+                    File.Delete(fileName + "=tmp.mp3");
                 }
             }
-            player.Open(new Uri(path, UriKind.RelativeOrAbsolute));
+            player.Open(new Uri(fileName, UriKind.RelativeOrAbsolute));
+            player.Position = musicPosition;
             player.Play();
         }
 
-        private void UpdateList()
+        private async void UpdateBtnClick(object sender, RoutedEventArgs e)
         {
             using (var client = new TcpClient())
             {
@@ -76,20 +99,20 @@ namespace MP3Player
                 using (var stream = client.GetStream())
                 {
                     var jsonResultStringBuilder = new StringBuilder();
+                    var data = Encoding.UTF8.GetBytes("Update");
+                    await stream.WriteAsync(data, 0, data.Length);
+                    Thread.Sleep(500);
                     while (stream.DataAvailable)
                     {
                         var buffer = new byte[1024];
-                        stream.Read(buffer, 0, buffer.Length);
+                        await stream.ReadAsync(buffer, 0, buffer.Length);
                         jsonResultStringBuilder.Append(Encoding.UTF8.GetString(buffer));
                     }
                     musicFiles = JsonConvert.DeserializeObject<List<MusicFileDto>>(jsonResultStringBuilder.ToString());
                 }
             }
-        }
-
-        private void UpdateBtnClick(object sender, RoutedEventArgs e)
-        {
-            UpdateList();
+            playList.ItemsSource = null;
+            playList.ItemsSource = musicFiles;
         }
     }
 }
